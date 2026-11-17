@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.bak-*
+*.tmp.*
+# evaluation outputs contain model answers and may contain private context
+*.jsonl
+out/
+.omc/

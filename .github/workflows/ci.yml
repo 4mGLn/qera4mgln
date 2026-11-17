@@ -1,0 +1,23 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Unit tests
+        run: python -W ignore -m unittest discover -s skills/qera4mgln/tests
+      - name: Manifest is up to date
+        run: |
+          tools/make-manifest.sh
+          git diff --exit-code skills/qera4mgln/MANIFEST.sha256
+      - name: Installer syntax and local install
+        run: |
+          bash -n install.sh
+          ./install.sh --from . --dest "$RUNNER_TEMP/skills" --test
