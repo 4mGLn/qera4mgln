@@ -122,6 +122,18 @@ def conv():
 
 
 class PipelineOverHttp(unittest.TestCase):
+    def test_empty_check_is_incomplete_over_http(self):
+        def route(system, payload):
+            if "separate evidence reviewer" in system:
+                return 200, chat("{}"), None
+            return m.default_route(system, payload)
+        with Mock(route) as m:
+            result = run.run_pipeline(conv(), adapter(m), mode="full")
+            self.assertEqual(m.stages(), ["ask", "answer", "check"])
+            self.assertEqual(result["stage"], "check_incomplete")
+            self.assertFalse(result["audit"]["check_complete"])
+            self.assertEqual(result["answer"], read_ex("draft.txt"))
+
     def test_draft_full_adaptive(self):
         for mode, stages in (("draft", ["ask", "answer"]),
                              ("full", ["ask", "answer", "check", "repair"]),
@@ -391,6 +403,36 @@ class EvalCli(unittest.TestCase):
             self.assertEqual(len(m.requests), n_req, "report must not hit the network")
             self.assertEqual(oct(rp.stat().st_mode & 0o777), "0o600")
 
+    def test_stale_results_fail_cleanly_without_http_calls_or_writes(self):
+        for change in ("task", "model", "judge_context"):
+            with self.subTest(change=change), Mock() as m, tempfile.TemporaryDirectory() as d:
+                tp, rp = Path(d) / "t.json", Path(d) / "r.jsonl"
+                task = {"id": "t", "conversation": conv(), "rubrics": ["a"]}
+                tp.write_text(json.dumps({"tasks": [task]}))
+                argv = ["--tasks", str(tp), "--results", str(rp), "--arms", "vanilla"]
+                rc, _, _ = self.cli(["run", *argv], None, m.base)
+                self.assertEqual(rc, 0)
+                before, calls = rp.read_bytes(), len(m.requests)
+                extra = None
+                if change == "task":
+                    task["rubrics"] = ["b", "c"]
+                    tp.write_text(json.dumps({"tasks": [task]}))
+                elif change == "model":
+                    extra = {"QERA_MODEL": "different-fixture-model"}
+                else:
+                    argv.append("--judge-context")
+                rc, out, err = self.cli(["run", *argv], extra, m.base)
+                self.assertEqual(rc, 2)
+                self.assertNotIn("Paired tasks:", out)
+                self.assertNotIn("Traceback", err)
+                self.assertIn("new --results", err)
+                if change != "model":
+                    rc, out, _ = self.cli(["report", *argv], extra, m.base)
+                    self.assertEqual(rc, 2)
+                    self.assertNotIn("Paired tasks:", out)
+                self.assertEqual(len(m.requests), calls)
+                self.assertEqual(rp.read_bytes(), before)
+
     def test_separate_judge_endpoint(self):
         with Mock() as gen, Mock() as jd, tempfile.TemporaryDirectory() as d:
             tp, rp = Path(d) / "t.json", Path(d) / "r.jsonl"
@@ -439,10 +481,14 @@ class EvalCli(unittest.TestCase):
         self.assertEqual(rec["draft"]["passes"], [False])
         self.assertNotIn(SECRET, text + out + err)
 
-    def test_missing_api_base_raises(self):
-        with self.assertRaises(ValueError):
-            self.cli(["run", "--tasks", str(EX / "eval" / "tasks.example.json"),
-                      "--results", "/nonexistent-dir-qera/r.jsonl"], {"QERA_API_BASE": ""}, "")
+    def test_missing_api_base_returns_clean_cli_error(self):
+        rc, out, err = self.cli(["run", "--tasks", str(EX / "eval" / "tasks.example.json"),
+                                "--results", "/nonexistent-dir-qera/r.jsonl"],
+                               {"QERA_API_BASE": ""}, "")
+        self.assertEqual(rc, 2)
+        self.assertEqual(out, "")
+        self.assertIn("API endpoint missing", err)
+        self.assertNotIn("Traceback", err)
 
 
 if __name__ == "__main__":

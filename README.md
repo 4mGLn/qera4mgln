@@ -6,6 +6,8 @@ A portable [Agent Skill](https://agentskills.io/specification) that applies the 
 
 Paper: Qi et al., *Ask Before You Answer: A Question-Driven Evidence Reasoning Architecture (QERA) for In-Context Learning*, [arXiv:2610.35083v2](https://arxiv.org/html/2610.35083v2).
 
+Unreleased reliability fixes (2026-11-20): evaluation resume/report now validate input and configuration fingerprints; incomplete CHECK responses return `check_incomplete`; repair guards reject minimum-word regressions. Legacy evaluation files without fingerprints require a new results file. See [evaluation compatibility](skills/qera4mgln/references/eval.md#run) and [check/guard contracts](skills/qera4mgln/references/schemas.md#check-output).
+
 ## Install
 
 One line (user level: `~/.claude/skills` and `~/.agents/skills`):

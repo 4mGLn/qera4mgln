@@ -10,6 +10,9 @@ EX = ROOT / "examples"
 
 class Gen:
     """Fake generator: vanilla answers badly, QERA stages replay the bundled example."""
+    model = "fixture-generator"
+    url = "https://example.invalid/v1/chat/completions"
+
     def complete(self, system, data, **kw):
         if system == ev.VANILLA_SYSTEM:
             return "I am not sure."
@@ -22,6 +25,9 @@ class Gen:
 
 class Judge:
     """Passes a rubric iff the response contains '104 TPS' (example's correct total)."""
+    model = "fixture-judge"
+    url = "https://example.invalid/v1/chat/completions"
+
     def complete(self, system, data, **kw):
         ok = "104 TPS" in data["response"]
         return json.dumps({"results": [{"id": r["id"], "pass": ok} for r in data["rubrics"]]})

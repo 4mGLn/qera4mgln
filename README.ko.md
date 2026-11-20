@@ -6,6 +6,8 @@ QERA 논문의 **ASK → ANSWER → CHECK → GUARDED REPAIR** 절차를 적용�
 
 논문: Qi 외, *Ask Before You Answer: A Question-Driven Evidence Reasoning Architecture (QERA) for In-Context Learning*, [arXiv:2610.35083v2](https://arxiv.org/html/2610.35083v2).
 
+미출시 보완(2026-11-20): 평가 재개·보고서에서 입력과 설정 지문을 검증하고, 불완전한 CHECK는 `check_incomplete`로 반환하며, guard는 최소 단어 수 조건을 새로 위반하거나 더 악화하는 수정을 거부합니다. 지문 없는 과거 평가 파일은 보존하고 새 결과 경로로 재실행해야 합니다. [평가 호환성](skills/qera4mgln/references/eval.md#run)과 [CHECK·guard 계약](skills/qera4mgln/references/schemas.md#check-output)을 참고하세요.
+
 ## 설치
 
 한 줄 설치(사용자 레벨: `~/.claude/skills`, `~/.agents/skills`):

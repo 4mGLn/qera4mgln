@@ -15,6 +15,9 @@ def tasks(n):
 
 class FlipGen:
     """Stochastic vanilla-only fake: answer is 'GOOD' with probability p_good, else 'BAD'."""
+    model = "fixture-generator"
+    url = "https://example.invalid/v1/chat/completions"
+
     def __init__(self, p_good, seed=0):
         self.p, self.rng, self.calls = p_good, random.Random(seed), 0
 
@@ -24,6 +27,9 @@ class FlipGen:
 
 
 class Judge:
+    model = "fixture-judge"
+    url = "https://example.invalid/v1/chat/completions"
+
     def complete(self, system, data, **kw):
         ok = "GOOD" in data["response"]
         return json.dumps({"results": [{"id": r["id"], "pass": ok} for r in data["rubrics"]]})
@@ -31,7 +37,8 @@ class Judge:
 
 def rec(task, arm, solved, repeat=None):
     r = {"task": task, "arm": arm, "passes": [solved, solved], "judge_error": None,
-         "answer": "x", "calls": 1, "approx_tokens": 10}
+         "answer": "x", "calls": 1, "approx_tokens": 10,
+         "evaluation": ev.evaluation_identity(tasks(1)[0], ev.evaluation_config(FlipGen(1), Judge()))}
     if repeat is not None:
         r["repeat"] = repeat
     return r
@@ -67,7 +74,7 @@ class RepeatTests(unittest.TestCase):
             self.assertEqual(gen2.calls, 4)
             self.assertEqual(len(path.read_text().splitlines()), 9)
 
-    def test_backward_compat_lines_without_repeat(self):
+    def test_missing_repeat_defaults_to_zero_with_matching_identity(self):
         ts = tasks(2)
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "r.jsonl"
