@@ -11,6 +11,7 @@ A task is "solved" only if every rubric passes (CL-bench style solving rate).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -19,7 +20,7 @@ from math import comb, sqrt
 from pathlib import Path
 
 from qera_core import validate_conversation
-from qera_run import ChatAdapter, parse_json_response, run_pipeline
+from qera_run import ChatAdapter, parse_json_response, prompt, run_pipeline
 
 ARMS = ("vanilla", "draft", "adaptive", "full")
 
@@ -123,8 +124,74 @@ def read_results(path: Path) -> dict:
             if line.strip():
                 r = json.loads(line)
                 # Lines written before --repeats existed have no "repeat": treat as repeat 0.
-                out[(r["task"], r["arm"], int(r.get("repeat", 0)))] = r
+                key = (r["task"], r["arm"], int(r.get("repeat", 0)))
+                if key in out and out[key] != r:
+                    raise ValueError(f"conflicting duplicate evaluation result for {key}; use a new --results path")
+                out[key] = r
     return out
+
+
+def fingerprint(value) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def protocol_fingerprint() -> str:
+    """Bind cached results to the shipped implementation and effective stage prompts."""
+    scripts = Path(__file__).resolve().parent
+    return fingerprint({
+        "scripts": {name: hashlib.sha256((scripts / name).read_bytes()).hexdigest()
+                    for name in ("qera_eval.py", "qera_run.py", "qera_core.py")},
+        "prompts": {stage: prompt(stage) for stage in ("ask", "answer", "check", "repair")},
+        "vanilla": VANILLA_SYSTEM, "judge": JUDGE_SYSTEM,
+    })
+
+
+def evaluation_config(gen, judge_adapter, judge_context: bool = False) -> dict:
+    def identity(adapter):
+        if not getattr(adapter, "model", None) or not getattr(adapter, "url", None):
+            raise ValueError("evaluation adapters must expose model and url for resumable results")
+        # Explicit allowlist: never persist credentials or adapter.__dict__.
+        return {"model": adapter.model, "endpoint": adapter.url,
+                "temperature": getattr(adapter, "temperature", 0)}
+    return {"version": 1, "protocol": protocol_fingerprint(), "generator": identity(gen),
+            "judge": identity(judge_adapter), "judge_context": judge_context}
+
+
+def evaluation_identity(task: dict, config: dict) -> dict:
+    return {"task_fingerprint": fingerprint({"conversation": task["conversation"],
+                                             "rubrics": task["rubrics"]}), "config": config}
+
+
+def validate_results(results: dict, tasks, *, config: dict | None = None,
+                     judge_context: bool | None = None) -> dict | None:
+    """Preflight the whole file before calls; report offline using its recorded model config."""
+    by_id = {t["id"]: t for t in tasks}
+    protocol = protocol_fingerprint()
+    recorded_config = None
+    for rec in results.values():
+        identity = rec.get("evaluation")
+        if not isinstance(identity, dict) or not isinstance(identity.get("config"), dict):
+            raise ValueError("results lack evaluation fingerprints; use a new --results path")
+        saved = identity["config"]
+        if saved.get("version") != 1 or saved.get("protocol") != protocol:
+            raise ValueError("evaluation protocol changed; use a new --results path")
+        if config is not None and saved != config:
+            raise ValueError("evaluation configuration changed; use a new --results path")
+        if recorded_config is not None and saved != recorded_config:
+            raise ValueError("results contain mixed evaluation configurations; use a new --results path")
+        recorded_config = saved
+        if judge_context is not None and saved.get("judge_context") != judge_context:
+            raise ValueError("judge-context differs from recorded evaluation; match it or use new results")
+        task = by_id.get(rec["task"])
+        if task is not None:
+            if identity.get("task_fingerprint") != evaluation_identity(task, saved)["task_fingerprint"]:
+                raise ValueError(f"task input changed for {task['id']}; use a new --results path")
+            passes = rec.get("passes")
+            if passes is not None and (not isinstance(passes, list) or
+                    len(passes) != len(task["rubrics"]) or any(type(p) is not bool for p in passes)):
+                raise ValueError(f"invalid rubric results for task {task['id']}")
+    return recorded_config
 
 
 def append_result(path: Path, rec: dict) -> None:
@@ -140,7 +207,9 @@ def run_eval(tasks, arms, gen, judge_adapter, results_path: Path, log=print, rep
     an interrupted run leaves complete early repeats rather than many repeats of few tasks."""
     if repeats < 1:
         raise ValueError("repeats must be >= 1")
+    config = evaluation_config(gen, judge_adapter, judge_context)
     done = read_results(results_path)
+    validate_results(done, tasks, config=config)
     for rep_i in range(repeats):
         for t in tasks:
             for arm in arms:
@@ -153,7 +222,7 @@ def run_eval(tasks, arms, gen, judge_adapter, results_path: Path, log=print, rep
                 except Exception as exc:  # noqa: BLE001
                     passes, jerr = None, str(exc)[:200]
                 rec = {"task": t["id"], "arm": arm, "repeat": rep_i, "passes": passes,
-                       "judge_error": jerr, **g}
+                       "judge_error": jerr, "evaluation": evaluation_identity(t, config), **g}
                 append_result(results_path, rec)
                 log(f"{t['id']:>12} {arm:<9} r{rep_i} solved={passes is not None and all(passes)} "
                     f"calls={g['calls']} err={g.get('error') or jerr or '-'}")
@@ -182,7 +251,8 @@ def _mean_sd(xs: list[float]) -> tuple[float, float | None]:
     return m, sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1))  # sample SD (n-1)
 
 
-def report(tasks, arms, results_path: Path, baseline="vanilla", seed=0, repeats: int = 1) -> dict:
+def report(tasks, arms, results_path: Path, baseline="vanilla", seed=0, repeats: int = 1,
+           *, judge_context: bool | None = None) -> dict:
     """Statistics unit is the TASK. Repeats are averaged within a task, never pooled as extra tasks.
 
     A task is included only if, for every requested arm, all repeats 0..repeats-1 exist and were
@@ -192,11 +262,12 @@ def report(tasks, arms, results_path: Path, baseline="vanilla", seed=0, repeats:
     if repeats < 1:
         raise ValueError("repeats must be >= 1")
     res = read_results(results_path)
+    config = validate_results(res, tasks, judge_context=judge_context)
     R = range(repeats)
     ok = [t for t in tasks if all((t["id"], a, r) in res and res[(t["id"], a, r)]["passes"] is not None
                                   for a in arms for r in R)]
     out = {"n_tasks_total": len(tasks), "n_tasks_paired": len(ok), "repeats": repeats,
-           "arms": {}, "vs_baseline": {}}
+           "arms": {}, "vs_baseline": {}, "evaluation_config": config}
     if not ok:
         return out
     solve, rubric = {}, {}   # arm -> per-task mean over repeats
@@ -241,6 +312,10 @@ def report(tasks, arms, results_path: Path, baseline="vanilla", seed=0, repeats:
 
 
 def print_report(rep: dict, baseline: str) -> None:
+    config = rep.get("evaluation_config")
+    if config:
+        print(f"Models: generator={config['generator']['model']} judge={config['judge']['model']} "
+              f"judge_context={config['judge_context']}")
     print(f"\nPaired tasks: {rep['n_tasks_paired']}/{rep['n_tasks_total']}  repeats={rep['repeats']}")
     for a, m in rep["arms"].items():
         sd = m["solving_rate_sd"]
@@ -290,14 +365,19 @@ def main(argv=None) -> int:
         p.error("--repeats must be >= 1")
     tasks = load_tasks(args.tasks)[: args.limit]
     path = Path(args.results)
-    if args.cmd == "run":
-        gen = _adapter("QERA", None, args)                 # QERA_API_BASE / MODEL / API_KEY
-        jd = _adapter("QERA_JUDGE", "QERA", args)          # falls back to generator if unset
-        if jd.model == gen.model and not os.environ.get("QERA_JUDGE_MODEL"):
-            print("WARNING: judge model == generator model (self-judging bias). "
-                  "Set QERA_JUDGE_MODEL/QERA_JUDGE_API_BASE/QERA_JUDGE_API_KEY.", file=sys.stderr)
-        run_eval(tasks, arms, gen, jd, path, repeats=args.repeats, judge_context=args.judge_context)
-    rep = report(tasks, arms, path, args.baseline, args.seed, args.repeats)
+    try:
+        if args.cmd == "run":
+            gen = _adapter("QERA", None, args)                 # QERA_API_BASE / MODEL / API_KEY
+            jd = _adapter("QERA_JUDGE", "QERA", args)          # falls back to generator if unset
+            if jd.model == gen.model and not os.environ.get("QERA_JUDGE_MODEL"):
+                print("WARNING: judge model == generator model (self-judging bias). "
+                      "Set QERA_JUDGE_MODEL/QERA_JUDGE_API_BASE/QERA_JUDGE_API_KEY.", file=sys.stderr)
+            run_eval(tasks, arms, gen, jd, path, repeats=args.repeats, judge_context=args.judge_context)
+        rep = report(tasks, arms, path, args.baseline, args.seed, args.repeats,
+                     judge_context=args.judge_context)
+    except (OSError, ValueError) as exc:
+        print(f"qera_eval: {exc}", file=sys.stderr)
+        return 2
     print_report(rep, args.baseline)
     return 0
 

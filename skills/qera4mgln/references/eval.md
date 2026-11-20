@@ -17,7 +17,13 @@ python3 scripts/qera_eval.py run --tasks tasks.json --results out/r.jsonl --arms
 python3 scripts/qera_eval.py report --tasks tasks.json --results out/r.jsonl --arms vanilla,draft,full
 ```
 Add `--repeats N` (default 1) to both `run` and `report` to run each task/arm N independent times; use the same N for `report`.
-`run` is resumable (finished task/arm/repeat triples are skipped; raising N later only runs the missing repeats). Result lines carry a `repeat` index; older files without it are read as repeat 0. Results hold full answers, so the file is created 0600.
+`run` is resumable: finished task/arm/repeat triples are skipped **only when their evaluation identity matches**; raising N later only runs the missing repeats. Each result binds the conversation (including any authenticated request boundary) and rubrics to a SHA-256 fingerprint and records generator/judge models, endpoints, temperature, `--judge-context`, and a fingerprint of the runner, audit/guard implementation and effective prompts. API keys are never part of this metadata. Report bootstrap seed, timeout and repeat count do not invalidate the identity.
+
+Before making calls, `run` checks the existing file for changed task inputs, changed configuration or mixed configurations. A mismatch exits with code 2 and leaves the results untouched; choose a **new `--results` path** for the changed experiment. `report` also rejects changed task inputs, stale implementation/prompts, mixed configurations and invalid rubric-result counts. It uses the recorded model configuration, requires no provider environment or network calls, and prints the recorded model names; use the same `--judge-context` flag as the run.
+
+Result lines carry a `repeat` index; a missing index is still read as repeat 0. **Legacy results without evaluation fingerprints cannot be resumed or reported by this version.** Keep those files for inspection or report them using their original code and task inputs; rerun into a new file to obtain results with provenance. A fingerprint records local inputs/configuration, not provider weights: a provider can change the backend behind an unchanged model name.
+
+Results hold full answers, so the file is created 0600. Custom in-process adapters must expose `model` and `url`; their `temperature` defaults to 0 when absent, and any custom behavior beyond these fields must be reflected in a distinct model identity.
 
 ## Reading the report
 - Reported only over tasks scored for **all** requested arms **and all N repeats** (paired).
@@ -30,7 +36,7 @@ Add `--repeats N` (default 1) to both `run` and `report` to run each task/arm N 
 - Generation or judge errors are counted, never silently replaced by a fallback answer. A task with a judge error is excluded from pairing.
 - Under 30 paired tasks the report warns: treat as anecdotal.
 - Default is a single run, which gives no variance estimate. temperature=0 does not make hosted APIs deterministic (OpenAI's documentation states determinism is not guaranteed even with `seed`; mixed-precision/batching/backend changes cause drift), so repeats are meaningful even at temperature 0. With N=1 the SD is not computed.
-- No `--temperature` option: `qera_run.ChatAdapter.complete` hardcodes `"temperature": 0` in the payload, and the harness may not change it without editing that module (or monkeypatching urllib, which was rejected as fragile). Repeats therefore sample only the provider's residual nondeterminism, not deliberate sampling diversity.
+- No `--temperature` option: the CLI uses `qera_run.ChatAdapter.temperature = 0` in the payload. The effective adapter temperature is recorded in the evaluation identity. CLI repeats therefore sample only the provider's residual nondeterminism, not deliberate sampling diversity.
 
 ## Limits
 Judge bias (use a different, ideally stronger model; self-judging favors the generator), small samples, rubric quality, and one model per run. Agentic tool tasks are out of scope: the harness measures text answers only.

@@ -48,6 +48,8 @@ def parse_json_response(text: str) -> dict:
 class ChatAdapter:
     """Endpoint adapter (chat/completions); host provider is responsible for auth."""
 
+    temperature = 0
+
     def __init__(self, model: str, base_url: str, key: str = "", timeout: int = 90):
         if not model:
             raise ValueError("Model missing; set --model or QERA_MODEL")
@@ -74,7 +76,7 @@ class ChatAdapter:
                 {"role": "system", "content": system},
                 {"role": "user", "content": json.dumps(data, ensure_ascii=False)},
             ],
-            "temperature": 0,
+            "temperature": self.temperature,
         }
         # Avoid response_format for broader API compatibility. JSON is requested in prompt.
         request = urllib.request.Request(
@@ -143,8 +145,10 @@ def run_pipeline(conversation: dict, adapter: ChatAdapter, mode: str = "adaptive
         "draft": draft, "measurements": measure(draft, contract),
     })
     evidence = audit(conversation, contract, draft, check)
-    output["stage"] = "checked"
+    output["stage"] = "checked" if evidence["check_complete"] else "check_incomplete"
     output["audit"] = evidence
+    if not evidence["check_complete"]:
+        return output
     if not evidence["actionable"]:
         return output
     candidate = adapter.complete(prompt("repair"), {

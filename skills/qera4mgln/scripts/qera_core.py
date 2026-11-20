@@ -226,9 +226,41 @@ def audit(conversation: dict, contract: dict, draft: str, check: dict) -> dict:
     req_ids = {r["id"] for r in contract.get("requirements", [])}
     need_by_id = {n["id"]: n for n in contract.get("information_needs", [])}
 
-    for rc in check.get("requirement_checks", []):
-        if not isinstance(rc, dict) or rc.get("id") not in req_ids:
-            continue
+    def entries(field, expected, statuses):
+        raw = check.get(field, [])
+        if not isinstance(raw, list):
+            warnings.append({"type": "invalid_check_collection", "field": field})
+            return [], set(expected)
+        accepted, seen = [], set()
+        for entry in raw:
+            if (not isinstance(entry, dict) or not isinstance(entry.get("id"), str)
+                    or entry["id"] not in expected):
+                warnings.append({"type": "invalid_check_entry", "field": field})
+                continue
+            cid = entry["id"]
+            if cid in seen:
+                warnings.append({"type": "duplicate_check_id", "field": field, "id": cid})
+                continue
+            seen.add(cid)
+            if (not isinstance(entry.get("status"), str) or entry["status"] not in statuses
+                    or (field == "need_checks" and not isinstance(entry.get("findings"), list))):
+                warnings.append({"type": "invalid_check_entry", "field": field, "id": cid})
+                continue
+            accepted.append(entry)
+        missing = set(expected) - {entry["id"] for entry in accepted}
+        return accepted, missing
+
+    requirement_checks, missing_reqs = entries("requirement_checks", req_ids,
+                                               {"pass", "partial", "fail", "unknown"})
+    need_checks, missing_needs = entries("need_checks", need_by_id,
+                                        {"correct", "partial", "missing", "unknown"})
+    structure_valid = not warnings
+    for field, missing in (("requirement_checks", missing_reqs), ("need_checks", missing_needs)):
+        if missing:
+            warnings.append({"type": "missing_checks", "field": field, "ids": sorted(missing)})
+    check_complete = structure_valid and not missing_reqs and not missing_needs
+
+    for rc in requirement_checks:
         status = rc.get("status", "unknown")
         snippet = str(rc.get("draft_quote", ""))
         if status == "pass" and not contains(draft, snippet):
@@ -237,13 +269,9 @@ def audit(conversation: dict, contract: dict, draft: str, check: dict) -> dict:
             actions.append({"type": "requirement_gap", "id": rc["id"],
                             "problem": rc["problem"], "suggested_fix": rc.get("fix", "")})
 
-    for nc in check.get("need_checks", []):
-        if not isinstance(nc, dict) or nc.get("id") not in need_by_id:
-            continue
+    for nc in need_checks:
         need = need_by_id[nc["id"]]
-        findings = nc.get("findings", [])
-        if not isinstance(findings, list):
-            continue
+        findings = nc["findings"]
         genuine = []
         for f in findings:
             if not isinstance(f, dict):
@@ -293,7 +321,10 @@ def audit(conversation: dict, contract: dict, draft: str, check: dict) -> dict:
                 warnings.append({"type": "invalid_calculation", "need_id": nc["id"], "detail": str(exc)})
 
     return {"actionable": actions, "warnings": warnings, "evidence_summary": verified,
-            "safe_to_autorepair": bool(actions) and not any(a.get("type") == "arithmetic_mismatch" for a in actions),
+            "check_complete": check_complete, "missing_requirement_ids": sorted(missing_reqs),
+            "missing_need_ids": sorted(missing_needs),
+            "safe_to_autorepair": check_complete and bool(actions) and not any(
+                a.get("type") == "arithmetic_mismatch" for a in actions),
             "note": "Literal/code audit only; use agent judgment for semantic grounding and permissions."}
 
 
@@ -323,6 +354,9 @@ def guard(conversation: dict, contract: dict, draft: str, candidate: str, *,
     old_issues = {(x["type"], x.get("requirement_id"), x.get("value")) for x in old_measure["issues"]}
     for issue in new_measure["issues"]:
         key = (issue["type"], issue.get("requirement_id"), issue.get("value"))
+        if issue["type"] == "under_word_limit":
+            if key not in old_issues or new_measure["words"] < old_measure["words"]:
+                reasons.append("introduced_under_word_limit")
         if issue["type"] in {"missing_required_literal", "excluded_term_present", "over_word_limit", "invalid_json_format"}:
             if key not in old_issues or issue["type"] == "over_word_limit":
                 reasons.append(f"introduced_{issue['type']}")

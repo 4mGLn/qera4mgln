@@ -91,7 +91,7 @@ class AuditTests(unittest.TestCase):
         raw = {"requirements": [{"id": "R", "user_quote": "List all", "description": "list", "kind": "list"}],
                "information_needs": [{"id": "N", "description": "All items", "type": "enumerate", "requirement_ids": ["R"]}]}
         contract = filter_contract(c, raw)
-        check = {"requirement_checks": [], "need_checks": [{"id": "N", "findings": [
+        check = {"requirement_checks": [], "need_checks": [{"id": "N", "status": "partial", "findings": [
             {"item_id": "A-11", "quote": "A-11 item"}, {"item_id": "B-22", "quote": "B-22 item"}]}]}
         result = audit(c, contract, "A-11 item", check)
         self.assertEqual(next(a["items"] for a in result["actionable"] if a["type"] == "missing_items"), ["B-22"])
@@ -100,7 +100,7 @@ class AuditTests(unittest.TestCase):
         c = {"messages": [{"role": "user", "content": "Count A-11 and B-22"}]}
         contract = filter_contract(c, {"requirements": [{"id": "R", "user_quote": "Count", "kind": "count"}],
             "information_needs": [{"id": "N", "type": "count", "description": "items", "requirement_ids": ["R"]}]})
-        check = {"need_checks": [{"id": "N", "stated_count": 3,
+        check = {"need_checks": [{"id": "N", "status": "partial", "stated_count": 3,
                   "findings": [{"item_id": "A-11", "quote": "A-11"}, {"item_id": "B-22", "quote": "B-22"}]}]}
         result = audit(c, contract, "A-11 B-22", check)
         self.assertEqual(next(a["found_distinct"] for a in result["actionable"] if a["type"] == "count_mismatch"), 2)

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — 2026-11-20
+- Bind evaluation results to task inputs, effective prompts/implementation, models, endpoints, temperature and judge context. Resume preflights before calls; reports reject stale/mixed results and mismatched rubric counts. Legacy results without fingerprints require a new results file.
+- Detect missing, duplicate and malformed CHECK entries against requirement/need IDs. Return `check_incomplete` without repair when coverage is incomplete, while retaining deterministic measurements.
+- Reject repairs that introduce a minimum-word violation or worsen an existing one, including short drafts and contracts with maximum-word limits.
+- Add regression coverage for the above, preserving matching-run resume, added repeats, offline reporting and credential rotation.
+
 ## 1.0.0
 - Skill `qera4mgln`: ASK -> ANSWER -> CHECK -> guarded REPAIR workflow, stdlib-only helpers (`filter`, `measure`, `audit`, `guard`), optional text-only OpenAI-compatible runner.
 - Prompts aligned to the paper's six-rule answer protocol; host safety rules separated into `safety.txt`.
